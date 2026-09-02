@@ -1,0 +1,23 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Actualizar codigo y reiniciar solo si ya estaba activo
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ~/portfolio/postgres-retail-admin
+            git pull origin main
+            cd ~/portfolio/portfolio-infra
+            if docker compose ps --services --filter "status=running" | grep -qx postgres; then
+              docker compose restart postgres
+            fi
