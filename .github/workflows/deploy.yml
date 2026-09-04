@@ -4,20 +4,37 @@ on:
   push:
     branches: [main]
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Actualizar codigo y reiniciar solo si ya estaba activo
-        uses: appleboy/ssh-action@v1.0.0
+      - name: Inspeccionar el token OIDC real (diagnostico temporal)
+        run: |
+          IDTOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value')
+          echo "$IDTOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
+
+      - name: Configurar credenciales AWS (OIDC, sin claves guardadas)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            cd ~/portfolio/postgres-retail-admin
-            git pull origin main
-            cd ~/portfolio/portfolio-infra
-            if docker compose ps --services --filter "status=running" | grep -qx postgres; then
-              docker compose restart postgres
-            fi
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Desplegar via SSM
+        run: |
+          CMD_ID=$(aws ssm send-command \
+            --region eu-south-2 \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters commands='[
+              "sudo -u ubuntu bash -c \"cd /home/ubuntu/portfolio/postgres-retail-admin && git pull origin main\"",
+              "cd /home/ubuntu/portfolio/portfolio-infra",
+              "if docker compose ps --services --filter status=running | grep -qx postgres; then docker compose restart postgres; fi"
+            ]' \
+            --query "Command.CommandId" --output text)
+
+          aws ssm wait command-executed --region eu-south-2 --command-id "$CMD_ID" --instance-id "${{ secrets.EC2_INSTANCE_ID }}"
+          aws ssm get-command-invocation --region eu-south-2 --command-id "$CMD_ID" --instance-id "${{ secrets.EC2_INSTANCE_ID }}"
